@@ -1,5 +1,6 @@
 import { ethers } from "ethers";
-import { CHAINS, ChainId } from "./chains";
+import { CHAINS } from "./chains";
+import { ChainId } from "@/types";
 
 // ===========================================
 // SPRAAY BATCH PAYMENT INTEGRATION

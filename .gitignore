@@ -41,3 +41,5 @@ public/workbox-*.js.map
 
 # supabase
 .supabase
+
+.vercel
