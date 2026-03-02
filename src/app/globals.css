@@ -1,0 +1,76 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url("https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap");
+
+:root {
+  --brand-primary: #00d67e;
+  --brand-primary-dark: #00b368;
+  --brand-primary-light: #00ffb2;
+  --brand-accent: #7c5cfc;
+  --brand-accent-light: #a78bfa;
+  --surface-0: #050a12;
+  --surface-1: #0b1120;
+  --surface-2: #111b2e;
+  --surface-3: #182438;
+  --border: #1e2d44;
+  --border-light: #2a3f5f;
+  --text-primary: #e8edf5;
+  --text-muted: #7a8ba8;
+  --text-dim: #4a5b73;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--surface-0);
+  color: var(--text-primary);
+  font-family: "DM Sans", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: var(--surface-1);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+
+/* PWA install banner styling */
+@media (display-mode: standalone) {
+  body {
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+}
+
+/* Mobile tap highlight */
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+
+@layer utilities {
+  .gradient-primary {
+    background: linear-gradient(135deg, var(--brand-primary), var(--brand-primary-dark));
+  }
+  .gradient-accent {
+    background: linear-gradient(135deg, var(--brand-accent), var(--brand-primary));
+  }
+  .glow-primary {
+    box-shadow: 0 4px 20px rgba(0, 214, 126, 0.2);
+  }
+  .glow-accent {
+    box-shadow: 0 4px 20px rgba(124, 92, 252, 0.2);
+  }
+}
