@@ -13,14 +13,5 @@ export default async function EmployerLayout({
 
   if (!user) redirect("/auth");
 
-  // Verify user has a company
-  const { data: company } = await supabase
-    .from("companies")
-    .select("*")
-    .eq("owner_id", user.id)
-    .single();
-
-  if (!company) redirect("/auth/onboard");
-
   return <>{children}</>;
 }

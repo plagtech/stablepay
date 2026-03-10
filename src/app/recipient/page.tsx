@@ -1,7 +1,8 @@
 import { createServerSupabase } from "@/lib/supabase/server";
 import { redirect } from "next/navigation";
+import RecipientApp from "@/components/recipient/app";
 
-export default async function RecipientHome() {
+export default async function RecipientPage() {
   const supabase = await createServerSupabase();
   const {
     data: { user },
@@ -9,41 +10,24 @@ export default async function RecipientHome() {
 
   if (!user) redirect("/auth");
 
-  // Get recipient record
+  // Get recipient record with company name
   const { data: recipient } = await supabase
     .from("recipients")
     .select("*, companies(name)")
     .eq("user_id", user.id)
     .single();
 
-  // Get recent payments
+  // Get all payments
   const { data: payments } = await supabase
     .from("payments")
     .select("*")
     .eq("recipient_id", recipient?.id)
-    .order("created_at", { ascending: false })
-    .limit(20);
+    .order("created_at", { ascending: false });
 
   return (
-    <div className="min-h-screen bg-surface-0">
-      {/* 
-        TODO: Import and render the RecipientView client component
-        from the prototype, passing recipient and payments as props.
-        The prototype JSX in stablepay.jsx has the complete mobile UI.
-      */}
-      <div className="p-6 text-center pt-20">
-        <h1 className="text-xl font-bold mb-2">
-          Welcome, {recipient?.name || "there"}
-        </h1>
-        <p className="text-text-muted text-sm">
-          {payments?.length || 0} payments received
-        </p>
-        <p className="text-sm text-text-dim mt-8">
-          🚧 Connect the prototype recipient view here.
-          <br />
-          The full mobile UI is in your stablepay.jsx artifact.
-        </p>
-      </div>
-    </div>
+    <RecipientApp
+      initialRecipient={recipient}
+      initialPayments={payments || []}
+    />
   );
 }
