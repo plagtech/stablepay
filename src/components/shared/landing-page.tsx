@@ -7,18 +7,60 @@ import { ethers } from "ethers";
 
 // ---- CONTRACT CONSTANTS ----
 const SPRAAY_ADDRESS = "0x1646452F98E36A3c9Cfc3eDD8868221E207B5eEC";
-const USDC_ADDRESS = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
-const USDC_DECIMALS = 6;
 const BASE_CHAIN_ID = 8453;
 
 const SPRAAY_ABI = [
   "function sprayToken(address token, tuple(address recipient, uint256 amount)[] recipients) external",
+  "function sprayETH(tuple(address recipient, uint256 amount)[] recipients) external payable",
 ];
 const ERC20_ABI = [
   "function approve(address spender, uint256 amount) external returns (bool)",
   "function allowance(address owner, address spender) external view returns (uint256)",
   "function balanceOf(address account) external view returns (uint256)",
 ];
+
+// ---- TOKEN CONFIG ----
+interface TokenConfig {
+  symbol: string;
+  address: string; // empty string = native token
+  decimals: number;
+  isNative: boolean;
+}
+
+const TOKENS_BY_CHAIN: Record<string, TokenConfig[]> = {
+  base: [
+    { symbol: "USDC", address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", decimals: 6, isNative: false },
+    { symbol: "ETH", address: "", decimals: 18, isNative: true },
+    { symbol: "DAI", address: "0x50c5725949A6F0c72E6C4a641F24049A917DB0Cb", decimals: 18, isNative: false },
+  ],
+  ethereum: [
+    { symbol: "USDC", address: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", decimals: 6, isNative: false },
+    { symbol: "ETH", address: "", decimals: 18, isNative: true },
+  ],
+  arbitrum: [
+    { symbol: "USDC", address: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831", decimals: 6, isNative: false },
+    { symbol: "ETH", address: "", decimals: 18, isNative: true },
+  ],
+  polygon: [
+    { symbol: "USDC", address: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359", decimals: 6, isNative: false },
+    { symbol: "POL", address: "", decimals: 18, isNative: true },
+  ],
+  bnb: [
+    { symbol: "USDC", address: "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d", decimals: 18, isNative: false },
+    { symbol: "BNB", address: "", decimals: 18, isNative: true },
+  ],
+  avalanche: [
+    { symbol: "USDC", address: "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E", decimals: 6, isNative: false },
+    { symbol: "AVAX", address: "", decimals: 18, isNative: true },
+  ],
+  solana: [
+    { symbol: "USDC", address: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", decimals: 6, isNative: false },
+    { symbol: "SOL", address: "", decimals: 9, isNative: true },
+  ],
+  bitcoin: [
+    { symbol: "BTC", address: "", decimals: 8, isNative: true },
+  ],
+};
 
 // ---- TYPES ----
 interface PayrollEntry {
@@ -133,6 +175,7 @@ export function LandingPage() {
   const [saveName, setSaveName] = useState("");
   const [emailAddr, setEmailAddr] = useState("");
   const [emailSending, setEmailSending] = useState(false);
+  const [token, setToken] = useState("USDC");
 
   // Wallet / TX state
   const [txStep, setTxStep] = useState<TxStep>("idle");
@@ -170,6 +213,17 @@ export function LandingPage() {
   }
 
   const chainInfo = CHAINS.find((c) => c.value === chain) || CHAINS[0];
+  const chainTokens = TOKENS_BY_CHAIN[chain] || TOKENS_BY_CHAIN["base"];
+  const selectedToken = chainTokens.find((t) => t.symbol === token) || chainTokens[0];
+  const tokenSymbol = selectedToken.symbol;
+  const isNativeToken = selectedToken.isNative;
+
+  // Reset token to USDC (or first available) when chain changes
+  useEffect(() => {
+    const tokens = TOKENS_BY_CHAIN[chain] || TOKENS_BY_CHAIN["base"];
+    const hasUsdc = tokens.find((t) => t.symbol === "USDC");
+    setToken(hasUsdc ? "USDC" : tokens[0].symbol);
+  }, [chain]);
   const total = entries.reduce((s, e) => s + e.amount, 0);
   const fee = total * 0.01;
   const gas = chainInfo.gas;
@@ -303,48 +357,72 @@ export function LandingPage() {
       const signer = provider.getSigner();
       const signerAddr = await signer.getAddress();
 
-      // Step 4: Check USDC balance
-      const usdc = new ethers.Contract(USDC_ADDRESS, ERC20_ABI, signer);
-      const totalWei = entries.reduce(
-        (sum, e) => sum.add(ethers.utils.parseUnits(e.amount.toFixed(USDC_DECIMALS), USDC_DECIMALS)),
-        ethers.BigNumber.from(0)
-      );
-      const balance = await usdc.balanceOf(signerAddr);
-      const balanceNum = parseFloat(ethers.utils.formatUnits(balance, USDC_DECIMALS));
-      setUsdcBalance(balanceNum);
-
-      if (balance.lt(totalWei)) {
-        setTxError(`Insufficient USDC. You have $${balanceNum.toFixed(2)} but need $${total.toFixed(2)}`);
-        setTxStep("error");
-        return;
-      }
-
-      // Step 5: Check allowance & approve if needed
-      const allowance = await usdc.allowance(signerAddr, SPRAAY_ADDRESS);
-      if (allowance.lt(totalWei)) {
-        setTxStep("approving");
-        const approveTx = await usdc.approve(SPRAAY_ADDRESS, ethers.constants.MaxUint256);
-        await approveTx.wait();
-      }
-
-      // Step 6: Execute batch payment via Spraay
-      setTxStep("sending");
-      const spraay = new ethers.Contract(SPRAAY_ADDRESS, SPRAAY_ABI, signer);
-
       // Build recipients array as tuples
       const recipients = entries.map((e) => ({
         recipient: e.addr,
-        amount: ethers.utils.parseUnits(e.amount.toFixed(USDC_DECIMALS), USDC_DECIMALS),
+        amount: ethers.utils.parseUnits(e.amount.toFixed(selectedToken.decimals > 6 ? 8 : selectedToken.decimals), selectedToken.decimals),
       }));
+      const totalWei = recipients.reduce(
+        (sum, r) => sum.add(r.amount),
+        ethers.BigNumber.from(0)
+      );
 
-      const tx = await spraay.sprayToken(USDC_ADDRESS, recipients);
+      if (isNativeToken) {
+        // ---- NATIVE TOKEN (ETH, BNB, AVAX, etc.) ----
+        // Check native balance
+        const balance = await provider.getBalance(signerAddr);
+        const balanceNum = parseFloat(ethers.utils.formatEther(balance));
+        setUsdcBalance(balanceNum);
 
-      setTxStep("confirming");
-      const receipt = await tx.wait();
+        if (balance.lt(totalWei)) {
+          setTxError(`Insufficient ${tokenSymbol}. You have ${balanceNum.toFixed(4)} but need ${total}`);
+          setTxStep("error");
+          return;
+        }
 
-      setTxHash(receipt.transactionHash);
-      setTxStep("done");
-      flash(`Payroll sent! ${entries.length} payments in 1 transaction`);
+        // No approval needed for native tokens
+        setTxStep("sending");
+        const spraay = new ethers.Contract(SPRAAY_ADDRESS, SPRAAY_ABI, signer);
+        const tx = await spraay.sprayETH(recipients, { value: totalWei });
+
+        setTxStep("confirming");
+        const receipt = await tx.wait();
+        setTxHash(receipt.transactionHash);
+        setTxStep("done");
+        flash(`Payroll sent! ${entries.length} ${tokenSymbol} payments in 1 transaction`);
+
+      } else {
+        // ---- ERC-20 TOKEN (USDC, DAI, etc.) ----
+        const tokenContract = new ethers.Contract(selectedToken.address, ERC20_ABI, signer);
+        const balance = await tokenContract.balanceOf(signerAddr);
+        const balanceNum = parseFloat(ethers.utils.formatUnits(balance, selectedToken.decimals));
+        setUsdcBalance(balanceNum);
+
+        if (balance.lt(totalWei)) {
+          setTxError(`Insufficient ${tokenSymbol}. You have ${balanceNum.toFixed(2)} but need ${total}`);
+          setTxStep("error");
+          return;
+        }
+
+        // Check allowance & approve if needed
+        const allowance = await tokenContract.allowance(signerAddr, SPRAAY_ADDRESS);
+        if (allowance.lt(totalWei)) {
+          setTxStep("approving");
+          const approveTx = await tokenContract.approve(SPRAAY_ADDRESS, ethers.constants.MaxUint256);
+          await approveTx.wait();
+        }
+
+        // Execute batch payment via Spraay
+        setTxStep("sending");
+        const spraay = new ethers.Contract(SPRAAY_ADDRESS, SPRAAY_ABI, signer);
+        const tx = await spraay.sprayToken(selectedToken.address, recipients);
+
+        setTxStep("confirming");
+        const receipt = await tx.wait();
+        setTxHash(receipt.transactionHash);
+        setTxStep("done");
+        flash(`Payroll sent! ${entries.length} ${tokenSymbol} payments in 1 transaction`);
+      }
 
     } catch (err: any) {
       console.error("[StablePay] TX error:", err);
@@ -355,7 +433,7 @@ export function LandingPage() {
       }
       setTxStep("error");
     }
-  }, [entries, chain, isConnected, connectedChain, switchChain, total]);
+  }, [entries, chain, isConnected, connectedChain, switchChain, total, selectedToken, tokenSymbol, isNativeToken]);
 
   const fmt = (n: number) => n.toLocaleString("en-US", { minimumFractionDigits: 2 });
 
@@ -471,14 +549,22 @@ export function LandingPage() {
             </div>
           )}
           <div className="flex items-center justify-between px-5 py-3 border-t border-border flex-wrap gap-3">
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-text-dim">Chain:</span>
-              <select value={chain} onChange={(e) => setChain(e.target.value)} className="bg-surface-3 text-text-primary border border-border rounded-lg px-3 py-1.5 text-xs font-medium outline-none focus:border-brand-primary/40">
-                <option value="base">{"\u26A1"} Base ($0 gas)</option>
-                <optgroup label="More chains">
-                  {CHAINS.slice(1).map((c) => (<option key={c.value} value={c.value}>{c.label}</option>))}
-                </optgroup>
-              </select>
+            <div className="flex items-center gap-3">
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-text-dim">Chain:</span>
+                <select value={chain} onChange={(e) => setChain(e.target.value)} className="bg-surface-3 text-text-primary border border-border rounded-lg px-3 py-1.5 text-xs font-medium outline-none focus:border-brand-primary/40">
+                  <option value="base">{"\u26A1"} Base ($0 gas)</option>
+                  <optgroup label="More chains">
+                    {CHAINS.slice(1).map((c) => (<option key={c.value} value={c.value}>{c.label}</option>))}
+                  </optgroup>
+                </select>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-text-dim">Token:</span>
+                <select value={token} onChange={(e) => setToken(e.target.value)} className="bg-surface-3 text-text-primary border border-border rounded-lg px-3 py-1.5 text-xs font-medium outline-none focus:border-brand-primary/40">
+                  {chainTokens.map((t) => (<option key={t.symbol} value={t.symbol}>{t.symbol}</option>))}
+                </select>
+              </div>
             </div>
             <button onClick={preview} className="px-6 py-2.5 rounded-full gradient-primary text-white font-semibold text-sm glow-primary">Preview Payments &rarr;</button>
           </div>
@@ -502,7 +588,7 @@ export function LandingPage() {
                   {entries.map((e, i) => (
                     <tr key={i} className="border-b border-border/30">
                       <td className="px-5 py-3 text-sm font-mono text-text-muted">{shortenAddr(e.addr)}</td>
-                      <td className="px-5 py-3 text-sm font-semibold text-right">${fmt(e.amount)}</td>
+                      <td className="px-5 py-3 text-sm font-semibold text-right">{fmt(e.amount)} {tokenSymbol}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -510,8 +596,8 @@ export function LandingPage() {
               {/* Stats */}
               <div className="px-5 py-4 flex items-center justify-between flex-wrap gap-4">
                 <div className="flex gap-6 flex-wrap">
-                  <div><p className="text-xs text-text-dim">Total</p><p className="text-base font-bold">${fmt(total)}</p></div>
-                  <div><p className="text-xs text-text-dim">Fee (1%)</p><p className="text-base font-bold">${fmt(fee)}</p></div>
+                  <div><p className="text-xs text-text-dim">Total</p><p className="text-base font-bold">{fmt(total)} {tokenSymbol}</p></div>
+                  <div><p className="text-xs text-text-dim">Fee (1%)</p><p className="text-base font-bold">{fmt(fee)} {tokenSymbol}</p></div>
                   <div><p className="text-xs text-text-dim">Gas</p><p className="text-base font-bold text-brand-primary">{gas === 0 ? "$0 gas \u26A1" : `$${gas.toFixed(2)}`}</p></div>
                   <div><p className="text-xs text-text-dim">You save</p><p className="text-base font-bold text-brand-primary">{savedGas > 0 ? `~${timeSaved} min + $${savedGas.toFixed(2)}` : `~${timeSaved} min`}</p></div>
                 </div>
@@ -555,12 +641,12 @@ export function LandingPage() {
               {/* USDC Balance indicator when connected */}
               {isConnected && usdcBalance !== null && (
                 <div className="px-5 py-2 text-xs text-text-dim border-t border-border">
-                  Wallet: {shortenAddr(address || "")} &middot; USDC Balance: ${fmt(usdcBalance)}
+                  Wallet: {shortenAddr(address || "")} &middot; {tokenSymbol} Balance: {fmt(usdcBalance)}
                 </div>
               )}
 
               <div className="px-5 py-2.5 bg-brand-primary/8 text-brand-primary text-sm font-medium">
-                {"\uD83D\uDCB0"} Only <strong>${fmt(fee)}</strong> to process this entire payroll
+                {"\uD83D\uDCB0"} Only <strong>{fmt(fee)} {tokenSymbol}</strong> to process this entire payroll
               </div>
               <div className="px-5 py-3 flex gap-2 flex-wrap border-t border-border">
                 {[
