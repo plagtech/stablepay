@@ -6,8 +6,29 @@ import { injected, coinbaseWallet } from "wagmi/connectors";
 import { ethers } from "ethers";
 
 // ---- CONTRACT CONSTANTS ----
-const SPRAAY_ADDRESS = "0x1646452F98E36A3c9Cfc3eDD8868221E207B5eEC";
-const BASE_CHAIN_ID = 8453;
+const SPRAAY_ADDRESSES: Record<string, string> = {
+  base: "0x1646452F98E36A3c9Cfc3eDD8868221E207B5eEC",
+  ethereum: "0x15E7aEDa45094DD2E9E746FcA1C726cAd7aE58b3",
+  arbitrum: "0x5be43aA67804aD84fcb890d0AE5F257fb1674302",
+  polygon: "0x6d2453ab7416c99aeDCA47CF552695be5789D7ff",
+  bnb: "0x3093a2951FB77b3beDfB8BA20De645F7413432C1",
+};
+const CHAIN_IDS: Record<string, number> = {
+  base: 8453,
+  ethereum: 1,
+  arbitrum: 42161,
+  polygon: 137,
+  bnb: 56,
+  avalanche: 43114,
+};
+const EXPLORER_URLS: Record<string, string> = {
+  base: "https://basescan.org",
+  ethereum: "https://etherscan.io",
+  arbitrum: "https://arbiscan.io",
+  polygon: "https://polygonscan.com",
+  bnb: "https://bscscan.com",
+  avalanche: "https://snowtrace.io",
+};
 
 const SPRAAY_ABI = [
   "function sprayToken(address token, tuple(address recipient, uint256 amount)[] recipients) external",
@@ -105,14 +126,14 @@ const EXAMPLE_DATA = `0x742d35Cc6634C0532925a3b844Bc9e7595f2bD18, 2500
 0xBE0eB53F46cd790Cd13851d5EFf43D12404d33E8, 950`;
 
 const CHAINS = [
-  { value: "base", label: "\u26A1 Base ($0 gas)", gas: 0, gasPerTx: 0 },
-  { value: "ethereum", label: "Ethereum", gas: 0.45, gasPerTx: 0.35 },
-  { value: "arbitrum", label: "Arbitrum", gas: 0.12, gasPerTx: 0.08 },
-  { value: "polygon", label: "Polygon", gas: 0.05, gasPerTx: 0.03 },
-  { value: "bnb", label: "BNB Chain", gas: 0.15, gasPerTx: 0.10 },
-  { value: "solana", label: "Solana", gas: 0.02, gasPerTx: 0.01 },
-  { value: "avalanche", label: "Avalanche", gas: 0.20, gasPerTx: 0.15 },
-  { value: "bitcoin", label: "Bitcoin", gas: 2.50, gasPerTx: 1.50 },
+  { value: "base", label: "\u26A1 Base ($0 gas)", gas: 0, gasPerTx: 0, live: true },
+  { value: "ethereum", label: "Ethereum", gas: 0.45, gasPerTx: 0.35, live: true },
+  { value: "arbitrum", label: "Arbitrum", gas: 0.12, gasPerTx: 0.08, live: true },
+  { value: "polygon", label: "Polygon", gas: 0.05, gasPerTx: 0.03, live: true },
+  { value: "bnb", label: "BNB Chain", gas: 0.15, gasPerTx: 0.10, live: true },
+  { value: "avalanche", label: "Avalanche (coming soon)", gas: 0.20, gasPerTx: 0.15, live: false },
+  { value: "solana", label: "Solana (coming soon)", gas: 0.02, gasPerTx: 0.01, live: false },
+  { value: "bitcoin", label: "Bitcoin (coming soon)", gas: 2.50, gasPerTx: 1.50, live: false },
 ];
 
 function Check({ className = "" }: { className?: string }) {
@@ -329,9 +350,11 @@ export function LandingPage() {
       return;
     }
 
-    // Only Base is wired for now
-    if (chain !== "base") {
-      setTxError("Only Base is supported for live payroll right now. Select Base and try again.");
+    // Check if chain is live
+    const spraayAddr = SPRAAY_ADDRESSES[chain];
+    const targetChainId = CHAIN_IDS[chain];
+    if (!spraayAddr || !targetChainId) {
+      setTxError(`${chain} is not live yet. Choose Base, Ethereum, Arbitrum, Polygon, or BNB.`);
       setTxStep("error");
       return;
     }
@@ -340,15 +363,14 @@ export function LandingPage() {
       // Step 1: Connect wallet if not connected
       if (!isConnected) {
         setTxStep("connecting");
-        // The modal will show connect options — user clicks one
-        return; // User needs to connect first, then click send again
+        return;
       }
 
-      // Step 2: Switch to Base if needed
-      if (connectedChain?.id !== BASE_CHAIN_ID) {
+      // Step 2: Switch chain if needed
+      if (connectedChain?.id !== targetChainId) {
         setTxStep("switching");
-        switchChain({ chainId: BASE_CHAIN_ID });
-        return; // Will re-trigger after chain switch
+        switchChain({ chainId: targetChainId });
+        return;
       }
 
       // Step 3: Get signer via ethers
@@ -368,8 +390,7 @@ export function LandingPage() {
       );
 
       if (isNativeToken) {
-        // ---- NATIVE TOKEN (ETH, BNB, AVAX, etc.) ----
-        // Check native balance
+        // ---- NATIVE TOKEN (ETH, BNB, POL, etc.) ----
         const balance = await provider.getBalance(signerAddr);
         const balanceNum = parseFloat(ethers.utils.formatEther(balance));
         setUsdcBalance(balanceNum);
@@ -380,9 +401,8 @@ export function LandingPage() {
           return;
         }
 
-        // No approval needed for native tokens
         setTxStep("sending");
-        const spraay = new ethers.Contract(SPRAAY_ADDRESS, SPRAAY_ABI, signer);
+        const spraay = new ethers.Contract(spraayAddr, SPRAAY_ABI, signer);
         const tx = await spraay.sprayETH(recipients, { value: totalWei });
 
         setTxStep("confirming");
@@ -405,16 +425,16 @@ export function LandingPage() {
         }
 
         // Check allowance & approve if needed
-        const allowance = await tokenContract.allowance(signerAddr, SPRAAY_ADDRESS);
+        const allowance = await tokenContract.allowance(signerAddr, spraayAddr);
         if (allowance.lt(totalWei)) {
           setTxStep("approving");
-          const approveTx = await tokenContract.approve(SPRAAY_ADDRESS, ethers.constants.MaxUint256);
+          const approveTx = await tokenContract.approve(spraayAddr, ethers.constants.MaxUint256);
           await approveTx.wait();
         }
 
         // Execute batch payment via Spraay
         setTxStep("sending");
-        const spraay = new ethers.Contract(SPRAAY_ADDRESS, SPRAAY_ABI, signer);
+        const spraay = new ethers.Contract(spraayAddr, SPRAAY_ABI, signer);
         const tx = await spraay.sprayToken(selectedToken.address, recipients);
 
         setTxStep("confirming");
@@ -438,13 +458,13 @@ export function LandingPage() {
   const fmt = (n: number) => n.toLocaleString("en-US", { minimumFractionDigits: 2 });
 
   // Determine send button state
-  const isBase = chain === "base";
+  const chainLive = CHAINS.find((c) => c.value === chain)?.live ?? false;
   const sendDisabled = txStep === "approving" || txStep === "sending" || txStep === "confirming";
 
   function getSendButtonText() {
-    if (!isBase) return "Switch to Base to Send";
+    if (!chainLive) return `${chain} coming soon`;
     if (!isConnected) return "Connect Wallet to Run Payroll";
-    if (txStep === "approving") return "Approving USDC...";
+    if (txStep === "approving") return `Approving ${tokenSymbol}...`;
     if (txStep === "sending") return "Confirm in Wallet...";
     if (txStep === "confirming") return "Confirming...";
     if (txStep === "done") return "\u2713 Payroll Sent!";
@@ -453,9 +473,12 @@ export function LandingPage() {
 
   function handleSendClick() {
     if (txStep === "done") {
-      // Reset for another run
       setTxStep("idle");
       setTxHash(null);
+      return;
+    }
+    if (!chainLive) {
+      flash(`${chain} is coming soon \u2014 try Base for $0 gas`);
       return;
     }
     if (!isConnected) {
@@ -631,7 +654,7 @@ export function LandingPage() {
                   {TX_STEP_LABELS[txStep]}
                   {txError && txStep === "error" && <span className="text-xs ml-2 opacity-70">{txError}</span>}
                   {txHash && (
-                    <a href={`https://basescan.org/tx/${txHash}`} target="_blank" rel="noopener" className="ml-auto text-xs text-brand-primary underline">
+                    <a href={`${EXPLORER_URLS[chain] || "https://basescan.org"}/tx/${txHash}`} target="_blank" rel="noopener" className="ml-auto text-xs text-brand-primary underline">
                       View on Basescan &rarr;
                     </a>
                   )}
