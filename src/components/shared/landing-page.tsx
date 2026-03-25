@@ -1,12 +1,32 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
+import { useAccount, useConnect, useDisconnect, useSwitchChain } from "wagmi";
+import { injected, coinbaseWallet } from "wagmi/connectors";
+import { ethers } from "ethers";
+
+// ---- CONTRACT CONSTANTS ----
+const SPRAAY_ADDRESS = "0x1646452F98E36A3c9Cfc3eDD8868221E207B5eEC";
+const USDC_ADDRESS = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
+const USDC_DECIMALS = 6;
+const BASE_CHAIN_ID = 8453;
+
+const SPRAAY_ABI = [
+  "function sprayToken(address token, tuple(address recipient, uint256 amount)[] recipients) external",
+];
+const ERC20_ABI = [
+  "function approve(address spender, uint256 amount) external returns (bool)",
+  "function allowance(address owner, address spender) external view returns (uint256)",
+  "function balanceOf(address account) external view returns (uint256)",
+];
 
 // ---- TYPES ----
 interface PayrollEntry {
   addr: string;
   amount: number;
 }
+
+type TxStep = "idle" | "connecting" | "switching" | "checking" | "approving" | "sending" | "confirming" | "done" | "error";
 
 // ---- HELPERS ----
 function parsePayroll(text: string): PayrollEntry[] {
@@ -30,6 +50,10 @@ function parsePayroll(text: string): PayrollEntry[] {
 function shortenAddr(addr: string) {
   if (addr.length > 12) return addr.slice(0, 6) + "\u00B7\u00B7\u00B7" + addr.slice(-4);
   return addr;
+}
+
+function isValidAddress(addr: string): boolean {
+  return /^0x[a-fA-F0-9]{40}$/.test(addr);
 }
 
 const EXAMPLE_DATA = `0x742d35Cc6634C0532925a3b844Bc9e7595f2bD18, 2500
@@ -80,6 +104,19 @@ function Modal({ open, onClose, title, children }: { open: boolean; onClose: () 
   );
 }
 
+// ---- TX STEP LABELS ----
+const TX_STEP_LABELS: Record<TxStep, string> = {
+  idle: "",
+  connecting: "Connecting wallet...",
+  switching: "Switching to Base...",
+  checking: "Checking USDC balance...",
+  approving: "Approve USDC in your wallet...",
+  sending: "Confirm transaction in your wallet...",
+  confirming: "Waiting for confirmation...",
+  done: "Payroll sent!",
+  error: "Transaction failed",
+};
+
 // ========================================
 // MAIN COMPONENT
 // ========================================
@@ -96,8 +133,21 @@ export function LandingPage() {
   const [saveName, setSaveName] = useState("");
   const [emailAddr, setEmailAddr] = useState("");
   const [emailSending, setEmailSending] = useState(false);
+
+  // Wallet / TX state
+  const [txStep, setTxStep] = useState<TxStep>("idle");
+  const [txHash, setTxHash] = useState<string | null>(null);
+  const [txError, setTxError] = useState<string | null>(null);
+  const [usdcBalance, setUsdcBalance] = useState<number | null>(null);
+
   const previewRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Wagmi hooks
+  const { address, isConnected, chain: connectedChain } = useAccount();
+  const { connect } = useConnect();
+  const { disconnect } = useDisconnect();
+  const { switchChain } = useSwitchChain();
 
   useEffect(() => {
     try {
@@ -116,7 +166,7 @@ export function LandingPage() {
 
   function flash(msg: string) {
     setToast({ message: msg, visible: true });
-    setTimeout(() => setToast((t) => ({ ...t, visible: false })), 2500);
+    setTimeout(() => setToast((t) => ({ ...t, visible: false })), 3000);
   }
 
   const chainInfo = CHAINS.find((c) => c.value === chain) || CHAINS[0];
@@ -210,7 +260,132 @@ export function LandingPage() {
     flash("CSV downloaded");
   }
 
+  // ========================================
+  // REAL WALLET CONNECT + SEND FLOW
+  // ========================================
+  const handleSendPayroll = useCallback(async () => {
+    setTxHash(null);
+    setTxError(null);
+
+    // Validate entries
+    const invalidAddrs = entries.filter((e) => !isValidAddress(e.addr));
+    if (invalidAddrs.length > 0) {
+      setTxError(`Invalid address: ${invalidAddrs[0].addr}`);
+      setTxStep("error");
+      return;
+    }
+
+    // Only Base is wired for now
+    if (chain !== "base") {
+      setTxError("Only Base is supported for live payroll right now. Select Base and try again.");
+      setTxStep("error");
+      return;
+    }
+
+    try {
+      // Step 1: Connect wallet if not connected
+      if (!isConnected) {
+        setTxStep("connecting");
+        // The modal will show connect options — user clicks one
+        return; // User needs to connect first, then click send again
+      }
+
+      // Step 2: Switch to Base if needed
+      if (connectedChain?.id !== BASE_CHAIN_ID) {
+        setTxStep("switching");
+        switchChain({ chainId: BASE_CHAIN_ID });
+        return; // Will re-trigger after chain switch
+      }
+
+      // Step 3: Get signer via ethers
+      setTxStep("checking");
+      const provider = new ethers.providers.Web3Provider(window.ethereum as any);
+      const signer = provider.getSigner();
+      const signerAddr = await signer.getAddress();
+
+      // Step 4: Check USDC balance
+      const usdc = new ethers.Contract(USDC_ADDRESS, ERC20_ABI, signer);
+      const totalWei = entries.reduce(
+        (sum, e) => sum.add(ethers.utils.parseUnits(e.amount.toFixed(USDC_DECIMALS), USDC_DECIMALS)),
+        ethers.BigNumber.from(0)
+      );
+      const balance = await usdc.balanceOf(signerAddr);
+      const balanceNum = parseFloat(ethers.utils.formatUnits(balance, USDC_DECIMALS));
+      setUsdcBalance(balanceNum);
+
+      if (balance.lt(totalWei)) {
+        setTxError(`Insufficient USDC. You have $${balanceNum.toFixed(2)} but need $${total.toFixed(2)}`);
+        setTxStep("error");
+        return;
+      }
+
+      // Step 5: Check allowance & approve if needed
+      const allowance = await usdc.allowance(signerAddr, SPRAAY_ADDRESS);
+      if (allowance.lt(totalWei)) {
+        setTxStep("approving");
+        const approveTx = await usdc.approve(SPRAAY_ADDRESS, ethers.constants.MaxUint256);
+        await approveTx.wait();
+      }
+
+      // Step 6: Execute batch payment via Spraay
+      setTxStep("sending");
+      const spraay = new ethers.Contract(SPRAAY_ADDRESS, SPRAAY_ABI, signer);
+
+      // Build recipients array as tuples
+      const recipients = entries.map((e) => ({
+        recipient: e.addr,
+        amount: ethers.utils.parseUnits(e.amount.toFixed(USDC_DECIMALS), USDC_DECIMALS),
+      }));
+
+      const tx = await spraay.sprayToken(USDC_ADDRESS, recipients);
+
+      setTxStep("confirming");
+      const receipt = await tx.wait();
+
+      setTxHash(receipt.transactionHash);
+      setTxStep("done");
+      flash(`Payroll sent! ${entries.length} payments in 1 transaction`);
+
+    } catch (err: any) {
+      console.error("[StablePay] TX error:", err);
+      if (err.code === 4001 || err.code === "ACTION_REJECTED") {
+        setTxError("Transaction rejected by user");
+      } else {
+        setTxError(err.reason || err.message || "Transaction failed");
+      }
+      setTxStep("error");
+    }
+  }, [entries, chain, isConnected, connectedChain, switchChain, total]);
+
   const fmt = (n: number) => n.toLocaleString("en-US", { minimumFractionDigits: 2 });
+
+  // Determine send button state
+  const isBase = chain === "base";
+  const sendDisabled = txStep === "approving" || txStep === "sending" || txStep === "confirming";
+
+  function getSendButtonText() {
+    if (!isBase) return "Switch to Base to Send";
+    if (!isConnected) return "Connect Wallet to Run Payroll";
+    if (txStep === "approving") return "Approving USDC...";
+    if (txStep === "sending") return "Confirm in Wallet...";
+    if (txStep === "confirming") return "Confirming...";
+    if (txStep === "done") return "\u2713 Payroll Sent!";
+    return `Send ${entries.length} Payment${entries.length > 1 ? "s" : ""} in 1 Transaction`;
+  }
+
+  function handleSendClick() {
+    if (txStep === "done") {
+      // Reset for another run
+      setTxStep("idle");
+      setTxHash(null);
+      return;
+    }
+    if (!isConnected) {
+      setWalletModal(true);
+      return;
+    }
+    handleSendPayroll();
+  }
 
   return (
     <div className="min-h-screen bg-surface-0 text-text-primary font-display">
@@ -224,7 +399,14 @@ export function LandingPage() {
           <a href="#demo" className="text-sm text-text-muted hover:text-text-primary transition-colors hidden sm:block">Try It</a>
           <a href="#how" className="text-sm text-text-muted hover:text-text-primary transition-colors hidden sm:block">How It Works</a>
           <a href="#pricing" className="text-sm text-text-muted hover:text-text-primary transition-colors hidden sm:block">Pricing</a>
-          <a href="/auth?signup=true" className="text-sm font-semibold px-5 py-2 rounded-full gradient-primary text-white glow-primary">Start Free &rarr;</a>
+          {isConnected ? (
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-brand-primary font-mono">{shortenAddr(address || "")}</span>
+              <button onClick={() => disconnect()} className="text-xs text-text-dim hover:text-text-muted">Disconnect</button>
+            </div>
+          ) : (
+            <a href="/auth?signup=true" className="text-sm font-semibold px-5 py-2 rounded-full gradient-primary text-white glow-primary">Start Free &rarr;</a>
+          )}
         </div>
       </nav>
 
@@ -259,7 +441,6 @@ export function LandingPage() {
         <p className="text-sm text-text-muted text-center max-w-md mx-auto mb-10">Paste wallet addresses and amounts below. No wallet needed to preview.</p>
 
         <div className="bg-surface-2 border border-border rounded-2xl overflow-hidden focus-within:border-brand-primary/40 transition-colors">
-          {/* Header */}
           <div className="flex items-center justify-between px-5 py-3 border-b border-border">
             <span className="text-sm font-semibold">Payroll</span>
             <div className="flex gap-1">
@@ -270,7 +451,6 @@ export function LandingPage() {
               ))}
             </div>
           </div>
-          {/* Toolbar */}
           <div className="flex items-center justify-between px-5 py-2 border-b border-border/50">
             <div className="flex gap-1">
               <button onClick={loadExample} className="px-3 py-1 rounded-lg text-xs text-text-dim hover:text-text-muted hover:bg-surface-3 transition-colors">{"\uD83D\uDCCB"} Load Example</button>
@@ -278,7 +458,6 @@ export function LandingPage() {
             </div>
             <span className="text-xs text-text-dim italic hidden sm:block">Tip: Paste directly from Google Sheets</span>
           </div>
-          {/* Input */}
           {tab === "paste" ? (
             <textarea value={input} onChange={(e) => setInput(e.target.value)} placeholder={"wallet address, amount (USD or USDC)\n0x742d...bD18, 2500\n0x53d2...8a3C, 1800"} spellCheck={false} className="w-full min-h-[160px] px-5 py-4 bg-transparent text-text-primary font-mono text-sm leading-loose resize-y outline-none placeholder-text-dim" />
           ) : (
@@ -291,7 +470,6 @@ export function LandingPage() {
               </div>
             </div>
           )}
-          {/* Footer */}
           <div className="flex items-center justify-between px-5 py-3 border-t border-border flex-wrap gap-3">
             <div className="flex items-center gap-2">
               <span className="text-xs text-text-dim">Chain:</span>
@@ -337,10 +515,50 @@ export function LandingPage() {
                   <div><p className="text-xs text-text-dim">Gas</p><p className="text-base font-bold text-brand-primary">{gas === 0 ? "$0 gas \u26A1" : `$${gas.toFixed(2)}`}</p></div>
                   <div><p className="text-xs text-text-dim">You save</p><p className="text-base font-bold text-brand-primary">{savedGas > 0 ? `~${timeSaved} min + $${savedGas.toFixed(2)}` : `~${timeSaved} min`}</p></div>
                 </div>
-                <button onClick={() => setWalletModal(true)} className="px-6 py-3 rounded-full gradient-primary text-white font-bold text-sm glow-primary whitespace-nowrap">
-                  Send {entries.length} Payment{entries.length > 1 ? "s" : ""} in 1 Transaction &rarr;
+                <button
+                  onClick={handleSendClick}
+                  disabled={sendDisabled}
+                  className={`px-6 py-3 rounded-full font-bold text-sm whitespace-nowrap flex items-center gap-2 transition-all ${
+                    txStep === "done"
+                      ? "bg-brand-primary/20 text-brand-primary border border-brand-primary/30"
+                      : txStep === "error"
+                      ? "bg-red-500/20 text-red-400 border border-red-500/30"
+                      : "gradient-primary text-white glow-primary"
+                  } disabled:opacity-50`}
+                >
+                  {getSendButtonText()} {txStep === "idle" || txStep === "error" ? "\u2192" : ""}
                 </button>
               </div>
+
+              {/* TX Status */}
+              {txStep !== "idle" && (
+                <div className={`px-5 py-3 text-sm font-medium flex items-center gap-2 ${
+                  txStep === "done" ? "bg-brand-primary/8 text-brand-primary" :
+                  txStep === "error" ? "bg-red-500/8 text-red-400" :
+                  "bg-surface-3 text-text-muted"
+                }`}>
+                  {txStep !== "done" && txStep !== "error" && (
+                    <span className="w-4 h-4 border-2 border-brand-primary/30 border-t-brand-primary rounded-full animate-spin" />
+                  )}
+                  {txStep === "done" && "\u2713 "}
+                  {txStep === "error" && "\u2717 "}
+                  {TX_STEP_LABELS[txStep]}
+                  {txError && txStep === "error" && <span className="text-xs ml-2 opacity-70">{txError}</span>}
+                  {txHash && (
+                    <a href={`https://basescan.org/tx/${txHash}`} target="_blank" rel="noopener" className="ml-auto text-xs text-brand-primary underline">
+                      View on Basescan &rarr;
+                    </a>
+                  )}
+                </div>
+              )}
+
+              {/* USDC Balance indicator when connected */}
+              {isConnected && usdcBalance !== null && (
+                <div className="px-5 py-2 text-xs text-text-dim border-t border-border">
+                  Wallet: {shortenAddr(address || "")} &middot; USDC Balance: ${fmt(usdcBalance)}
+                </div>
+              )}
+
               <div className="px-5 py-2.5 bg-brand-primary/8 text-brand-primary text-sm font-medium">
                 {"\uD83D\uDCB0"} Only <strong>${fmt(fee)}</strong> to process this entire payroll
               </div>
@@ -458,7 +676,6 @@ export function LandingPage() {
         <a href="#demo" className="inline-block px-8 py-3.5 rounded-full gradient-primary text-white font-bold text-sm glow-primary">Run Demo Payroll &rarr;</a>
       </section>
 
-      {/* FOOTER */}
       <footer className="border-t border-border px-6 py-8 text-center">
         <p className="text-xs text-text-dim">&copy; 2026 StablePay &middot; <a href="https://spraay.app" target="_blank" rel="noopener" className="hover:text-text-muted transition-colors">Powered by Spraay Protocol</a></p>
       </footer>
@@ -478,21 +695,36 @@ export function LandingPage() {
         <p className="text-xs text-text-dim text-center mt-2.5">We&apos;ll send totals, recipients, and a link to return.</p>
       </Modal>
 
+      {/* WALLET CONNECT MODAL */}
       <Modal open={walletModal} onClose={() => setWalletModal(false)} title="Connect Wallet to Run Payroll">
-        <div className="space-y-0 mb-5">
+        <p className="text-sm text-text-muted mb-4">Choose your wallet to connect and send payroll on Base.</p>
+        <div className="space-y-2 mb-4">
+          <button
+            onClick={() => { connect({ connector: injected() }); setWalletModal(false); flash("Wallet connected"); }}
+            className="w-full py-3 px-4 rounded-xl bg-surface-3 border border-border hover:border-brand-primary/40 transition-colors flex items-center gap-3 text-sm font-medium"
+          >
+            <span className="text-lg">{"\uD83E\uDD8A"}</span> MetaMask / Browser Wallet
+          </button>
+          <button
+            onClick={() => { connect({ connector: coinbaseWallet({ appName: "StablePay" }) }); setWalletModal(false); flash("Wallet connected"); }}
+            className="w-full py-3 px-4 rounded-xl bg-surface-3 border border-border hover:border-brand-primary/40 transition-colors flex items-center gap-3 text-sm font-medium"
+          >
+            <span className="text-lg">{"\uD83D\uDD35"}</span> Coinbase Wallet
+          </button>
+        </div>
+        <div className="space-y-0 mb-4">
           {[
-            { num: "1", text: "Connect your wallet", sub: "MetaMask, Coinbase, WalletConnect" },
-            { num: "2", text: "Approve USDC spend", sub: "One-time approval for batch contract" },
-            { num: "3", text: "Confirm & send", sub: "All payments in one transaction" },
+            { num: "1", text: "Connect your wallet" },
+            { num: "2", text: "Approve USDC spend (one-time)" },
+            { num: "3", text: "Confirm & send \u2014 all payments in 1 tx" },
           ].map((step) => (
-            <div key={step.num} className="flex items-center gap-3 py-3 border-b border-border/50 last:border-0">
-              <span className="w-7 h-7 rounded-full bg-brand-primary/15 text-brand-primary text-xs font-bold flex items-center justify-center flex-shrink-0">{step.num}</span>
-              <div><p className="text-sm font-medium">{step.text}</p><p className="text-xs text-text-dim">{step.sub}</p></div>
+            <div key={step.num} className="flex items-center gap-3 py-2.5 border-b border-border/50 last:border-0">
+              <span className="w-6 h-6 rounded-full bg-brand-primary/15 text-brand-primary text-xs font-bold flex items-center justify-center flex-shrink-0">{step.num}</span>
+              <p className="text-xs text-text-muted">{step.text}</p>
             </div>
           ))}
         </div>
-        <a href="/auth?signup=true" className="block w-full py-3 rounded-full gradient-primary text-white font-bold text-sm glow-primary text-center">Sign Up to Connect Wallet &rarr;</a>
-        <p className="text-xs text-text-dim text-center mt-2.5">Non-custodial &mdash; you control your funds the entire time</p>
+        <p className="text-xs text-text-dim text-center">Non-custodial &mdash; you control your funds the entire time</p>
       </Modal>
 
       <Toast message={toast.message} visible={toast.visible} />
