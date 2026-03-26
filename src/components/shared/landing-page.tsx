@@ -246,7 +246,9 @@ export function LandingPage() {
     setToken(hasUsdc ? "USDC" : tokens[0].symbol);
   }, [chain]);
   const total = entries.reduce((s, e) => s + e.amount, 0);
-  const fee = total * 0.01;
+  const feeRaw = total * 0.01;
+  const isStablecoin = tokenSymbol === "USDC" || tokenSymbol === "DAI";
+  const fee = isStablecoin ? Math.min(100, Math.max(1, feeRaw)) : feeRaw; // Stablecoins: min $1, max $100
   const gas = chainInfo.gas;
   const savedGas = chainInfo.gasPerTx * Math.max(0, entries.length - 1);
   const timeSaved = entries.length * 2;
@@ -380,14 +382,34 @@ export function LandingPage() {
       const signerAddr = await signer.getAddress();
 
       // Build recipients array as tuples
-      const recipients = entries.map((e) => ({
+      const decimals = selectedToken.decimals;
+      const fixedDigits = decimals > 6 ? 8 : decimals;
+      const paymentRecipients = entries.map((e) => ({
         recipient: e.addr,
-        amount: ethers.utils.parseUnits(e.amount.toFixed(selectedToken.decimals > 6 ? 8 : selectedToken.decimals), selectedToken.decimals),
+        amount: ethers.utils.parseUnits(e.amount.toFixed(fixedDigits), decimals),
       }));
-      const totalWei = recipients.reduce(
+
+      // Calculate 1% fee with min/max guardrails, add fee wallet as extra recipient
+      const FEE_WALLET = "0xAd62f03C7514bb8c51f1eA70C2b75C37404695c8";
+      const subtotal = paymentRecipients.reduce(
         (sum, r) => sum.add(r.amount),
         ethers.BigNumber.from(0)
       );
+      // Fee: 1% of subtotal
+      // For stablecoins (USDC/DAI): min $1, max $100
+      // For native tokens (ETH/BNB/etc): straight 1% (no dollar guardrails)
+      let feeAmount = subtotal.div(100);
+      if (!isNativeToken && (selectedToken.symbol === "USDC" || selectedToken.symbol === "DAI")) {
+        const minFee = ethers.utils.parseUnits("1", decimals);
+        const maxFee = ethers.utils.parseUnits("100", decimals);
+        if (feeAmount.lt(minFee)) feeAmount = minFee;
+        if (feeAmount.gt(maxFee)) feeAmount = maxFee;
+      }
+      const recipients = [
+        ...paymentRecipients,
+        { recipient: FEE_WALLET, amount: feeAmount },
+      ];
+      const totalWei = subtotal.add(feeAmount);
 
       if (isNativeToken) {
         // ---- NATIVE TOKEN (ETH, BNB, POL, etc.) ----
@@ -396,7 +418,7 @@ export function LandingPage() {
         setUsdcBalance(balanceNum);
 
         if (balance.lt(totalWei)) {
-          setTxError(`Insufficient ${tokenSymbol}. You have ${balanceNum.toFixed(4)} but need ${total}`);
+          setTxError(`Insufficient ${tokenSymbol}. You have ${balanceNum.toFixed(4)} but need ${(total + fee).toFixed(4)} (incl. 1% fee)`);
           setTxStep("error");
           return;
         }
@@ -419,7 +441,7 @@ export function LandingPage() {
         setUsdcBalance(balanceNum);
 
         if (balance.lt(totalWei)) {
-          setTxError(`Insufficient ${tokenSymbol}. You have ${balanceNum.toFixed(2)} but need ${total}`);
+          setTxError(`Insufficient ${tokenSymbol}. You have ${balanceNum.toFixed(2)} but need ${(total + fee).toFixed(2)} (incl. 1% fee)`);
           setTxStep("error");
           return;
         }
@@ -620,7 +642,7 @@ export function LandingPage() {
               <div className="px-5 py-4 flex items-center justify-between flex-wrap gap-4">
                 <div className="flex gap-6 flex-wrap">
                   <div><p className="text-xs text-text-dim">Total</p><p className="text-base font-bold">{fmt(total)} {tokenSymbol}</p></div>
-                  <div><p className="text-xs text-text-dim">Fee (1%)</p><p className="text-base font-bold">{fmt(fee)} {tokenSymbol}</p></div>
+                  <div><p className="text-xs text-text-dim">Fee{isStablecoin && fee <= 1 ? " (min)" : isStablecoin && fee >= 100 ? " (max)" : " (1%)"}</p><p className="text-base font-bold">{fmt(fee)} {tokenSymbol}</p></div>
                   <div><p className="text-xs text-text-dim">Gas</p><p className="text-base font-bold text-brand-primary">{gas === 0 ? "$0 gas \u26A1" : `$${gas.toFixed(2)}`}</p></div>
                   <div><p className="text-xs text-text-dim">You save</p><p className="text-base font-bold text-brand-primary">{savedGas > 0 ? `~${timeSaved} min + $${savedGas.toFixed(2)}` : `~${timeSaved} min`}</p></div>
                 </div>
@@ -764,7 +786,7 @@ export function LandingPage() {
             <span className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-brand-primary/10 text-xs font-semibold text-brand-primary mb-4">{"\u2728"} Free under 10 payments</span>
             <h3 className="text-xl font-bold mb-2">Pay as you go</h3>
             <p className="text-5xl font-extrabold tracking-tight">1%<span className="text-base text-text-muted font-normal"> per batch</span></p>
-            <p className="text-xs text-text-dim mt-2">No subscriptions. No hidden fees. No minimums.</p>
+            <p className="text-xs text-text-dim mt-2">Min $1 &middot; Max $100 &middot; No subscriptions. No hidden fees.</p>
           </div>
           <div className="w-[calc(100%-64px)] mx-auto h-px bg-border" />
           <div className="px-8 py-6 text-left space-y-3">
