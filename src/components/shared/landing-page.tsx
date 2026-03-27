@@ -552,7 +552,7 @@ export function LandingPage() {
       {/* NAV */}
       <nav className="fixed top-0 left-0 right-0 z-40 px-6 py-4 bg-surface-0/80 backdrop-blur-xl border-b border-border flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <span className="text-brand-primary font-extrabold text-lg">S</span>
+          <img src="/logo.png" alt="SP" className="w-5 h-5" />
           <span className="font-bold tracking-tight">StablePay</span>
         </div>
         <div className="flex items-center gap-5">
