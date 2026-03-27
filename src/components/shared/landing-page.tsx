@@ -217,6 +217,24 @@ export function LandingPage() {
     try {
       const saved = localStorage.getItem("sp_input");
       setInput(saved && saved.trim() ? saved : EXAMPLE_DATA);
+
+      // Check if coming from a shared payroll link
+      const sharedChain = localStorage.getItem("sp_shared_chain");
+      const sharedToken = localStorage.getItem("sp_shared_token");
+      const autoPreview = localStorage.getItem("sp_shared_autopreview");
+      if (sharedChain) { setChain(sharedChain); localStorage.removeItem("sp_shared_chain"); }
+      if (sharedToken) { setToken(sharedToken); localStorage.removeItem("sp_shared_token"); }
+      if (autoPreview && saved) {
+        localStorage.removeItem("sp_shared_autopreview");
+        // Auto-preview after a short delay to let state settle
+        setTimeout(() => {
+          const parsed = parsePayroll(saved);
+          if (parsed.length > 0) {
+            setEntries(parsed);
+            setShowPreview(true);
+          }
+        }, 300);
+      }
     } catch {
       setInput(EXAMPLE_DATA);
     }
@@ -335,6 +353,25 @@ export function LandingPage() {
     a.href = url; a.download = "stablepay-payroll.csv"; a.click();
     URL.revokeObjectURL(url);
     flash("CSV downloaded");
+  }
+
+  async function sharePayroll() {
+    if (entries.length === 0) return;
+    try {
+      const res = await fetch("/api/share", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ entries, chain, token }),
+      });
+      if (!res.ok) throw new Error("Failed");
+      const data = await res.json();
+      const shareUrl = data.url;
+      // Copy to clipboard
+      await navigator.clipboard.writeText(shareUrl);
+      flash("Link copied! Share it with your team");
+    } catch {
+      flash("Could not create share link");
+    }
   }
 
   // ========================================
@@ -698,6 +735,7 @@ export function LandingPage() {
                   { label: "\uD83D\uDCBE Save for Next Month", fn: () => setSaveModal(true) },
                   { label: "\uD83D\uDCE7 Email Summary", fn: () => setEmailModal(true) },
                   { label: "\uD83D\uDCE5 Download CSV", fn: downloadCSV },
+                  { label: "\uD83D\uDD17 Share Payroll Link", fn: sharePayroll },
                 ].map((btn) => (
                   <button key={btn.label} onClick={btn.fn} className="px-4 py-2 rounded-full text-xs font-medium border border-border text-text-muted hover:border-brand-primary/40 hover:text-brand-primary hover:bg-brand-primary/5 transition-colors">
                     {btn.label}
@@ -803,7 +841,8 @@ export function LandingPage() {
       {/* CTA */}
       <section className="px-6 py-24 text-center">
         <h2 className="text-2xl sm:text-3xl font-extrabold tracking-tight mb-3">You&apos;re still doing payroll manually?</h2>
-        <p className="text-text-muted max-w-md mx-auto mb-8">Teams run StablePay every month. Set it up once, run payroll in 60 seconds &mdash; forever.</p>
+        <p className="text-text-muted max-w-md mx-auto mb-4">Teams run StablePay every month. Set it up once, run payroll in 60 seconds &mdash; forever.</p>
+        <p className="text-sm text-text-dim max-w-md mx-auto mb-8">Try this on your next payroll run &mdash; most teams switch after one batch.</p>
         <a href="#demo" className="inline-block px-8 py-3.5 rounded-full gradient-primary text-white font-bold text-sm glow-primary">Run Demo Payroll &rarr;</a>
       </section>
 
