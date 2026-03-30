@@ -3,21 +3,23 @@ import "./globals.css";
 import { Providers } from "@/components/shared/providers";
 
 export const metadata: Metadata = {
-  title: "StablePay — Get Paid. Stay Stable.",
+  title: "StablePay — Crypto Payroll in 60 Seconds",
   description:
-    "The simplest way to pay your team in digital dollars. Multi-chain crypto payroll powered by Spraay Protocol.",
+    "Pay your team in one transaction. Multi-chain crypto payroll on Base, Ethereum, Arbitrum, Polygon, and BNB. $0 gas on Base.",
   metadataBase: new URL("https://stablepay.me"),
   openGraph: {
-    title: "StablePay",
-    description: "The simplest crypto payroll platform. Pay your global team in digital dollars.",
+    title: "StablePay — Crypto Payroll in 60 Seconds",
+    description: "Pay your team in one transaction. Multi-chain crypto payroll. $0 gas on Base.",
     url: "https://stablepay.me",
     siteName: "StablePay",
     type: "website",
+    images: [{ url: "/og-image.jpg", width: 1024, height: 1024 }],
   },
   twitter: {
     card: "summary_large_image",
-    title: "StablePay",
-    description: "Get Paid. Stay Stable. Crypto payroll made simple.",
+    title: "StablePay — Crypto Payroll in 60 Seconds",
+    description: "Pay your team in one transaction. $0 gas on Base.",
+    images: ["/og-image.jpg"],
   },
   manifest: "/manifest.json",
   icons: {
