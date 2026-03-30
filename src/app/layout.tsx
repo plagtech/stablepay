@@ -16,7 +16,7 @@ export const metadata: Metadata = {
     images: [{ url: "/og-image.jpg", width: 1024, height: 1024 }],
   },
   twitter: {
-    card: "summary_large_image",
+    card: "summary",
     title: "StablePay — Crypto Payroll in 60 Seconds",
     description: "Pay your team in one transaction. $0 gas on Base.",
     images: ["/og-image.jpg"],
